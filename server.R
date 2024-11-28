@@ -1,6 +1,15 @@
 server <- function(input, output, session) {
   
-  # Initialize reactive values
+  # LEVEL NAVIGATION ---------------------------------------------
+  observeEvent(input$start_skills, {
+    updateTabsetPanel(session, "navbar", selected = "Skills Intervention")
+  })
+  
+  observeEvent(input$start_lifecourse, {
+    updateTabsetPanel(session, "navbar", selected = "Lifecourse Model")
+  })
+  
+  # SKILLS GAME STATE -------------------------------------------
   game_state <- reactiveValues(
     score = 0,
     correct_attempts = 0,
@@ -8,10 +17,11 @@ server <- function(input, output, session) {
     timer = 0,
     is_running = FALSE,
     game_complete = FALSE,
-    placed_items = list()
+    placed_items = list(),
+    consecutive_correct = 0
   )
   
-  # Game items with their correct categories and icons
+  # Game items
   items <- list(
     list(id = "1", text = "Veterans' Time Investment", category = "inputs", icon = "clock"),
     list(id = "2", text = "Programme Delivery Costs", category = "inputs", icon = "pound-sign"),
@@ -29,52 +39,6 @@ server <- function(input, output, session) {
     list(id = "14", text = "Benefit System Savings", category = "final", icon = "pound-sign")
   )
   
-  # Initialize game items
-  observeEvent(c(1), {
-    # Shuffle items
-    shuffled_items <- sample(items)
-    
-    # Clear existing items
-    removeUI(selector = "#available_items > *", immediate = TRUE)
-    
-    # Add shuffled items
-    for(item in shuffled_items) {
-      insertUI(
-        selector = "#available_items",
-        where = "beforeEnd",
-        ui = div(
-          id = paste0("item_", item$id),
-          class = "draggable-item",
-          `data-category` = item$category,
-          tags$i(class = paste0("fas fa-", item$icon)),
-          span(item$text)
-        )
-      )
-    }
-    
-    # Initialize Sortable
-    runjs("
-      new Sortable(document.getElementById('available_items'), {
-        group: 'logic_items',
-        animation: 150,
-        sort: false
-      });
-      
-      document.querySelectorAll('.dropzone').forEach(function(dropzone) {
-        new Sortable(dropzone, {
-          group: 'logic_items',
-          animation: 150,
-          onAdd: function(evt) {
-            Shiny.setInputValue('item_dropped', {
-              item: evt.item.id,
-              target: evt.to.id
-            });
-          }
-        });
-      });
-    ")
-  })
-  
   # Timer observer
   observe({
     if (game_state$is_running) {
@@ -85,28 +49,66 @@ server <- function(input, output, session) {
     }
   })
   
-  # Format timer output
-  output$timer <- renderText({
-    mins <- floor(game_state$timer / 60)
-    secs <- game_state$timer %% 60
-    sprintf("%02d:%02d", mins, secs)
-  })
-  
-  # Score outputs
-  output$score <- renderText({
-    sprintf("%d/%d", game_state$score, length(items))
-  })
-  
-  output$correct_attempts <- renderText({
-    game_state$correct_attempts
-  })
-  
-  output$incorrect_attempts <- renderText({
-    game_state$incorrect_attempts
+  # Initialize game on Skills tab load
+  observeEvent(input$navbar, {
+    if(input$navbar == "Skills Intervention") {
+      # Initialize game state
+      game_state$score <- 0
+      game_state$correct_attempts <- 0
+      game_state$incorrect_attempts <- 0
+      game_state$timer <- 0
+      game_state$is_running <- FALSE
+      game_state$game_complete <- FALSE
+      game_state$placed_items <- list()
+      game_state$consecutive_correct <- 0
+      
+      # Shuffle and initialize items
+      shuffled_items <- sample(items)
+      
+      removeUI(selector = "#available_items > *", immediate = TRUE)
+      
+      for(item in shuffled_items) {
+        insertUI(
+          selector = "#available_items",
+          where = "beforeEnd",
+          ui = div(
+            id = paste0("item_", item$id),
+            class = "draggable-item",
+            `data-category` = item$category,
+            tags$i(class = paste0("fas fa-", item$icon)),
+            span(item$text)
+          )
+        )
+      }
+      
+      # Initialize Sortable
+      runjs("
+        new Sortable(document.getElementById('available_items'), {
+          group: 'logic_items',
+          animation: 150,
+          sort: false
+        });
+        
+        document.querySelectorAll('.dropzone').forEach(function(dropzone) {
+          new Sortable(dropzone, {
+            group: 'logic_items',
+            animation: 150,
+            onAdd: function(evt) {
+              Shiny.setInputValue('item_dropped', {
+                item: evt.item.id,
+                target: evt.to.id
+              });
+            }
+          });
+        });
+      ")
+    }
   })
   
   # Handle item drops
   observeEvent(input$item_dropped, {
+    req(input$item_dropped$item, input$item_dropped$target)
+    
     if (!game_state$is_running) {
       game_state$is_running <- TRUE
     }
@@ -123,9 +125,10 @@ server <- function(input, output, session) {
     if (is_correct) {
       game_state$score <- game_state$score + 1
       game_state$correct_attempts <- game_state$correct_attempts + 1
+      game_state$consecutive_correct <- game_state$consecutive_correct + 1
       game_state$placed_items[[item_id]] <- item
       
-      # Add correct feedback
+      # Add visual feedback
       runjs(sprintf("
         document.getElementById('%s').classList.add('correct');
         setTimeout(function() {
@@ -145,8 +148,9 @@ server <- function(input, output, session) {
     } else {
       game_state$score <- max(0, game_state$score - 1)
       game_state$incorrect_attempts <- game_state$incorrect_attempts + 1
+      game_state$consecutive_correct <- 0
       
-      # Add incorrect feedback
+      # Add visual feedback
       runjs(sprintf("
         document.getElementById('%s').classList.add('incorrect');
         setTimeout(function() {
@@ -177,6 +181,12 @@ server <- function(input, output, session) {
       game_state$is_running <- FALSE
       game_state$game_complete <- TRUE
       
+      # Calculate final score
+      final_score <- game_state$score
+      time_bonus <- if(game_state$timer < 180) 5 else 0
+      accuracy_bonus <- if(game_state$incorrect_attempts == 0) 3 else 0
+      total_score <- final_score + time_bonus + accuracy_bonus
+      
       showModal(modalDialog(
         title = NULL,
         div(
@@ -188,7 +198,7 @@ server <- function(input, output, session) {
              style = "color: #009cd6; margin-bottom: 20px;"),
           div(
             style = "background: rgba(0,156,214,0.1); padding: 20px; border-radius: 10px; margin-bottom: 20px;",
-            h4(sprintf("Final Score: %d/%d", game_state$score, length(items)),
+            h4(sprintf("Final Score: %d", total_score),
                style = "color: #009cd6; margin-bottom: 10px;"),
             h4(sprintf("Time: %02d:%02d", floor(game_state$timer / 60), game_state$timer %% 60),
                style = "margin-bottom: 10px;"),
@@ -203,12 +213,7 @@ server <- function(input, output, session) {
           actionButton("play_again", "Play Again", 
                        class = "btn-unite",
                        style = "margin-right: 10px;"),
-          tags$button(
-            "Close",
-            type = "button",
-            class = "btn btn-unite",
-            `data-bs-dismiss` = "modal"
-          )
+          modalButton("Close")
         ),
         size = "m",
         easyClose = TRUE
@@ -216,64 +221,21 @@ server <- function(input, output, session) {
     }
   })
   
-  # Reset game
-  observeEvent(input$reset_game, {
-    game_state$score <- 0
-    game_state$correct_attempts <- 0
-    game_state$incorrect_attempts <- 0
-    game_state$timer <- 0
-    game_state$is_running <- FALSE
-    game_state$game_complete <- FALSE
-    game_state$placed_items <- list()
-    
-    # Clear all dropzones
-    runjs("
-      document.querySelectorAll('.dropzone').forEach(function(dropzone) {
-        while (dropzone.firstChild) {
-          dropzone.removeChild(dropzone.firstChild);
-        }
-      });
-    ")
-    
-    # Reinitialize items
-    shuffled_items <- sample(items)
-    removeUI(selector = "#available_items > *", immediate = TRUE)
-    
-    for(item in shuffled_items) {
-      insertUI(
-        selector = "#available_items",
-        where = "beforeEnd",
-        ui = div(
-          id = paste0("item_", item$id),
-          class = "draggable-item",
-          `data-category` = item$category,
-          tags$i(class = paste0("fas fa-", item$icon)),
-          span(item$text)
-        )
-      )
-    }
-    
-    # Reinitialize sortable
-    runjs("
-      new Sortable(document.getElementById('available_items'), {
-        group: 'logic_items',
-        animation: 150,
-        sort: false
-      });
-      
-      document.querySelectorAll('.dropzone').forEach(function(dropzone) {
-        new Sortable(dropzone, {
-          group: 'logic_items',
-          animation: 150,
-          onAdd: function(evt) {
-            Shiny.setInputValue('item_dropped', {
-              item: evt.item.id,
-              target: evt.to.id
-            });
-          }
-        });
-      });
-    ")
+  # OUTPUTS ----------------------------------------------------
+  output$timer <- renderText({
+    sprintf("%02d:%02d", floor(game_state$timer / 60), game_state$timer %% 60)
+  })
+  
+  output$score <- renderText({
+    sprintf("%d/%d", game_state$score, length(items))
+  })
+  
+  output$correct_attempts <- renderText({
+    game_state$correct_attempts
+  })
+  
+  output$incorrect_attempts <- renderText({
+    game_state$incorrect_attempts
   })
   
   # Play again handler
@@ -287,7 +249,7 @@ server <- function(input, output, session) {
     game_state$game_complete <- FALSE
     game_state$placed_items <- list()
     
-    # Clear all dropzones
+    # Clear dropzones
     runjs("
       document.querySelectorAll('.dropzone').forEach(function(dropzone) {
         while (dropzone.firstChild) {
@@ -313,37 +275,5 @@ server <- function(input, output, session) {
         )
       )
     }
-    
-    # Reinitialize sortable
-    runjs("
-      new Sortable(document.getElementById('available_items'), {
-        group: 'logic_items',
-        animation: 150,
-        sort: false
-      });
-      
-      document.querySelectorAll('.dropzone').forEach(function(dropzone) {
-        new Sortable(dropzone, {
-          group: 'logic_items',
-          animation: 150,
-          onAdd: function(evt) {
-            Shiny.setInputValue('item_dropped', {
-              item: evt.item.id,
-              target: evt.to.id
-            });
-          }
-        });
-      });
-    ")
   })
-  
-  # Download report handler
-  output$download_report <- downloadHandler(
-    filename = function() {
-      paste("LogicLab_Report_", format(Sys.time(), "%Y%m%d_%H%M"), ".pdf", sep = "")
-    },
-    content = function(file) {
-      # TODO: Implement report generation
-    }
-  )
 }
